@@ -2,21 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.neighbors import NearestNeighbors
 import os
-
-# ==========================================
-# 1. 辅助功能：数据生成与文件保存
-# ==========================================
-
-def generate_torus_point_cloud(n_samples=1000, R=3.0, r=1.0):
-    """生成一个圆环点云作为示例数据"""
-    theta = 2 * np.pi * np.random.rand(n_samples)
-    phi = 2 * np.pi * np.random.rand(n_samples)
-
-    x = (R + r * np.cos(theta)) * np.cos(phi)
-    y = (R + r * np.cos(theta)) * np.sin(phi)
-    z = r * np.sin(theta)
-
-    return np.vstack((x, y, z)).T
+from prepare_data import prepare_icp_data
 
 def save_ply(filename, points):
     """将点云保存为 .ply 格式"""
@@ -33,31 +19,6 @@ end_header
         f.write(header)
         np.savetxt(f, points, fmt='%.6f %.6f %.6f')
 
-def create_sample_npz(filename='sample_data.npz'):
-    """生成并保存示例数据到 .npz"""
-    print(f"正在生成示例数据: {filename} ...")
-    # 生成目标点云 (Target)
-    target = generate_torus_point_cloud(1000)
-
-    # 生成源点云 (Source): 旋转 + 平移 + 噪声
-    theta = np.radians(45)
-    R_true = np.array([
-        [np.cos(theta), -np.sin(theta), 0],
-        [np.sin(theta),  np.cos(theta), 0],
-        [0,              0,             1]
-    ])
-    t_true = np.array([2.0, 3.0, -1.0])
-
-    source = np.dot(target, R_true.T) + t_true
-    source += np.random.normal(0, 0.05, size=source.shape) # 添加噪声
-
-    # 保存为 npz
-    np.savez(filename, source=source, target=target)
-    print("数据生成完毕。")
-
-# ==========================================
-# 2. 核心 ICP 算法 (带误差记录)
-# ==========================================
 
 def best_fit_transform(A, B):
     centroid_A = np.mean(A, axis=0)
@@ -76,13 +37,14 @@ def best_fit_transform(A, B):
     T[:3, 3] = t
     return T
 
+
 def icp(source, target, max_iterations=50, tolerance=1e-5):
     src = np.copy(source)
     T_final = np.identity(4)
     nbrs = NearestNeighbors(n_neighbors=1, algorithm='kd_tree').fit(target)
 
     prev_error = float('inf')
-    error_history = [] # 用于记录收敛曲线
+    error_history = []  # 用于记录收敛曲线
 
     for i in range(max_iterations):
         distances, indices = nbrs.kneighbors(src)
@@ -103,16 +65,13 @@ def icp(source, target, max_iterations=50, tolerance=1e-5):
 
     return T_final, src, error_history
 
-# ==========================================
-# 3. 主程序：执行并导出结果
-# ==========================================
 
 if __name__ == "__main__":
     # 1. 准备数据
-    if not os.path.exists('sample_data.npz'):
-        create_sample_npz()
+    if not os.path.exists('test_data.npz'):
+        prepare_icp_data("armadillo.ply", "test_data.npz")
 
-    data = np.load('sample_data.npz')
+    data = np.load('test_data.npz')
     source = data['source']
     target = data['target']
 
@@ -148,9 +107,9 @@ if __name__ == "__main__":
     fig = plt.figure(figsize=(10, 6))
     ax = fig.add_subplot(111, projection='3d')
     # 原始 Target (蓝色)
-    ax.scatter(target[:,0], target[:,1], target[:,2], c='blue', s=1, alpha=0.5, label='Target')
+    ax.scatter(target[:, 0], target[:, 1], target[:, 2], c='blue', s=1, alpha=0.5, label='Target')
     # 对齐后的 Source (红色)
-    ax.scatter(aligned_source[:,0], aligned_source[:,1], aligned_source[:,2], c='red', s=1, alpha=0.5, label='Aligned Source')
+    ax.scatter(aligned_source[:, 0], aligned_source[:, 1], aligned_source[:, 2], c='red', s=1, alpha=0.5, label='Aligned Source')
 
     ax.set_title('ICP Alignment Result')
     ax.legend()
