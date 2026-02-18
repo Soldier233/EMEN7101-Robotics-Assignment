@@ -1,3 +1,4 @@
 /.idea/
 Assignment1/results
 Assignment1/test_data.npz
+/Assignment1/benchmark_results_smoke/

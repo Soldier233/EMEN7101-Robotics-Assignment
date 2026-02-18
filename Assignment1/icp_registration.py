@@ -234,7 +234,7 @@ def multi_resolution_icp(source, target, voxel_sizes=(0.08, 0.04, 0.02),
     return T_total, aligned, error_history
 
 
-def run_icp_mode(source, target, mode="baseline"):
+def run_icp_mode(source, target, mode="baseline", target_normals=None):
     if mode == "baseline":
         return icp(source, target, max_iterations=50, tolerance=1e-5,
                    method='point_to_point', use_weights=False)
@@ -248,11 +248,11 @@ def run_icp_mode(source, target, mode="baseline"):
                            trim_quantile=0.9)
         T1, src1, e1 = icp(src0, target, max_iterations=35, tolerance=1e-6,
                            method='point_to_plane', use_weights=True, weight_mode='distance',
-                           trim_quantile=0.85, robust_plane=True)
+                           trim_quantile=0.85, robust_plane=True, target_normals=target_normals)
         return T1 @ T0, src1, e0 + e1
     if mode == "point_to_plane_raw":
         return icp(source, target, max_iterations=50, tolerance=1e-5,
-                   method='point_to_plane', use_weights=False)
+                   method='point_to_plane', use_weights=False, target_normals=target_normals)
     if mode == "multires":
         return multi_resolution_icp(
             source, target,
@@ -308,12 +308,15 @@ if __name__ == "__main__":
     data = np.load('test_data.npz')
     source = data['source']
     target = data['target']
+    target_normals = data['target_normals'] if 'target_normals' in data.files else None
 
     # 2. Run ICP
     # Modes: baseline | weighted | point_to_plane | point_to_plane_raw | multires
     icp_mode = os.getenv("ICP_MODE", "baseline")
     print(f"Running ICP mode: {icp_mode}")
-    T_matrix, aligned_source, errors = run_icp_mode(source, target, mode=icp_mode)
+    T_matrix, aligned_source, errors = run_icp_mode(
+        source, target, mode=icp_mode, target_normals=target_normals
+    )
 
     # 3. Create results directory
     output_dir = 'results'
