@@ -357,11 +357,6 @@ if __name__ == "__main__":
     plt.savefig(os.path.join(output_dir, 'visualization.png'), dpi=150)
     plt.close()
 
-    # --- E. Optional benchmarking output ---
-    benchmark_icp_variants(source, target, os.path.join(output_dir, 'benchmark.csv'))
-
-    print("All offline tasks completed!")
-
     # --- F. Launch Open3D interactive visualization window ---
     print("Launching Open3D visualization window (Left click to drag/rotate, right click to pan, scroll to zoom)...")
 
