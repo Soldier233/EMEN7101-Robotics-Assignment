@@ -122,7 +122,7 @@ def summarize(rows):
 
     summary = []
     for (dataset, mode), items in grouped.items():
-        arr_final = np.array([x["final_error"] for x in items], dtype=float)
+        arr_rmse = np.array([x["rmse"] for x in items], dtype=float)
         arr_rot = np.array([x["rot_err_deg"] for x in items], dtype=float)
         arr_trans = np.array([x["trans_err"] for x in items], dtype=float)
         arr_time = np.array([x["time_sec"] for x in items], dtype=float)
@@ -131,8 +131,8 @@ def summarize(rows):
             "dataset": dataset,
             "mode": mode,
             "trials": len(items),
-            "final_error_mean": float(arr_final.mean()),
-            "final_error_std": float(arr_final.std()),
+            "rmse_mean": float(arr_rmse.mean()),
+            "rmse_std": float(arr_rmse.std()),
             "rot_err_deg_mean": float(arr_rot.mean()),
             "rot_err_deg_std": float(arr_rot.std()),
             "trans_err_mean": float(arr_trans.mean()),
@@ -140,7 +140,7 @@ def summarize(rows):
             "time_sec_mean": float(arr_time.mean()),
             "iterations_mean": float(arr_iter.mean()),
         })
-    return sorted(summary, key=lambda x: (x["dataset"], x["final_error_mean"]))
+    return sorted(summary, key=lambda x: (x["dataset"], x["rmse_mean"]))
 
 
 def main():
@@ -183,7 +183,7 @@ def main():
                     "mode": mode,
                     "trial": trial,
                     "iterations": len(errs),
-                    "final_error": final_err,
+                    "rmse": final_err,
                     "rot_err_deg": r_err,
                     "trans_err": t_err,
                     "time_sec": elapsed,
@@ -193,7 +193,7 @@ def main():
     with open(raw_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["dataset", "mode", "trial", "iterations", "final_error", "rot_err_deg", "trans_err", "time_sec"]
+            fieldnames=["dataset", "mode", "trial", "iterations", "rmse", "rot_err_deg", "trans_err", "time_sec"]
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -204,7 +204,7 @@ def main():
         writer = csv.DictWriter(
             f,
             fieldnames=[
-                "dataset", "mode", "trials", "final_error_mean", "final_error_std",
+                "dataset", "mode", "trials", "rmse_mean", "rmse_std",
                 "rot_err_deg_mean", "rot_err_deg_std", "trans_err_mean", "trans_err_std",
                 "time_sec_mean", "iterations_mean"
             ]
@@ -218,7 +218,7 @@ def main():
         for s in summary:
             line = (
                 f"{s['dataset']:<20} {s['mode']:<16} "
-                f"final={s['final_error_mean']:.6f}+/-{s['final_error_std']:.6f} "
+                f"rmse={s['rmse_mean']:.6f}+/-{s['rmse_std']:.6f} "
                 f"rot={s['rot_err_deg_mean']:.3f}deg "
                 f"trans={s['trans_err_mean']:.6f} "
                 f"time={s['time_sec_mean']:.4f}s\n"

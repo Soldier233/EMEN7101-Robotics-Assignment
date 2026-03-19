@@ -178,7 +178,7 @@ def icp(source, target, max_iterations=50, tolerance=1e-5, method='point_to_poin
         if np.count_nonzero(mask) < 20:
             break
 
-        current_error = float(np.mean(d[mask]))
+        current_error = float(np.sqrt(np.mean(d[mask] ** 2)))
         error_history.append(current_error)
 
         if np.abs(prev_error - current_error) < tolerance:
@@ -273,7 +273,7 @@ def benchmark_icp_variants(source, target, output_path):
         ("weighted_point_to_plane_robust", dict(method='point_to_plane', use_weights=True, weight_mode='distance', trim_quantile=0.85, robust_plane=True)),
     ]
 
-    lines = ["variant,iterations,final_error,time_sec"]
+    lines = ["variant,iterations,rmse,time_sec"]
     for name, kwargs in variants:
         start = time.perf_counter()
         _, _, errs = icp(source, target, max_iterations=50, tolerance=1e-5, **kwargs)
@@ -337,7 +337,7 @@ if __name__ == "__main__":
     plt.plot(errors, marker='o', linestyle='-', color='b')
     plt.title('ICP Convergence Curve')
     plt.xlabel('Iteration')
-    plt.ylabel('Mean Euclidean Distance Error')
+    plt.ylabel('RMSE')
     plt.grid(True)
     plt.savefig(os.path.join(output_dir, 'convergence_curve.png'))
     plt.close()
