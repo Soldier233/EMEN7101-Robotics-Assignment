@@ -1,0 +1,7 @@
+queries: 5.0000
+top1_accuracy: 1.0000
+top3_accuracy: 1.0000
+mrr: 1.0000
+reference_images: 15.0000
+average_reference_keypoints: 346.9333
+average_query_keypoints: 616.2000

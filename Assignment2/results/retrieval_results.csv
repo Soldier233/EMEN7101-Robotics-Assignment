@@ -1,0 +1,16 @@
+query_path,query_label,rank,match_path,match_label,score
+Assignment2/data/demo/query/alpha_query.png,alpha,1,Assignment2/data/demo/reference/alpha_ref3.png,alpha,0.512549
+Assignment2/data/demo/query/alpha_query.png,alpha,2,Assignment2/data/demo/reference/alpha_ref2.png,alpha,0.536424
+Assignment2/data/demo/query/alpha_query.png,alpha,3,Assignment2/data/demo/reference/epsilon_ref1.png,epsilon,0.477348
+Assignment2/data/demo/query/beta_query.png,beta,1,Assignment2/data/demo/reference/beta_ref1.png,beta,0.455154
+Assignment2/data/demo/query/beta_query.png,beta,2,Assignment2/data/demo/reference/beta_ref2.png,beta,0.497472
+Assignment2/data/demo/query/beta_query.png,beta,3,Assignment2/data/demo/reference/beta_ref3.png,beta,0.493889
+Assignment2/data/demo/query/delta_query.png,delta,1,Assignment2/data/demo/reference/delta_ref3.png,delta,0.629355
+Assignment2/data/demo/query/delta_query.png,delta,2,Assignment2/data/demo/reference/epsilon_ref1.png,epsilon,0.674656
+Assignment2/data/demo/query/delta_query.png,delta,3,Assignment2/data/demo/reference/epsilon_ref3.png,epsilon,0.670878
+Assignment2/data/demo/query/epsilon_query.png,epsilon,1,Assignment2/data/demo/reference/epsilon_ref2.png,epsilon,0.468785
+Assignment2/data/demo/query/epsilon_query.png,epsilon,2,Assignment2/data/demo/reference/epsilon_ref3.png,epsilon,0.427068
+Assignment2/data/demo/query/epsilon_query.png,epsilon,3,Assignment2/data/demo/reference/epsilon_ref1.png,epsilon,0.460850
+Assignment2/data/demo/query/gamma_query.png,gamma,1,Assignment2/data/demo/reference/gamma_ref1.png,gamma,0.559979
+Assignment2/data/demo/query/gamma_query.png,gamma,2,Assignment2/data/demo/reference/gamma_ref3.png,gamma,0.628449
+Assignment2/data/demo/query/gamma_query.png,gamma,3,Assignment2/data/demo/reference/gamma_ref2.png,gamma,0.562974

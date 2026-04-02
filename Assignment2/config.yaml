@@ -1,0 +1,31 @@
+dataset:
+  reference_dir: Assignment2/data/demo/reference
+  query_dir: Assignment2/data/demo/query
+
+feature:
+  type: SIFT
+  max_features: 900
+
+vocabulary:
+  size: 48
+  max_descriptors: 12000
+  random_state: 42
+
+retrieval:
+  top_k: 3
+  metric: cosine
+
+spatial_verification:
+  enabled: true
+  rerank_top_n: 5
+  ratio_test: 0.75
+  ransac_threshold: 4.0
+
+loop_closure:
+  enabled: true
+  threshold: 0.78
+  min_gap: 2
+
+output:
+  results_dir: Assignment2/results
+  save_visualizations: true
