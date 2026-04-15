@@ -1,8 +1,7 @@
 import csv
-import math
 import os
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import cv2
 import matplotlib
@@ -19,18 +18,29 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 @dataclass
 class ImageEntry:
     path: str
+    image_id: str
     label: str
     keypoints: List[cv2.KeyPoint]
     descriptors: np.ndarray
     histogram: Optional[np.ndarray] = None
 
 
+@dataclass
+class QueryEntry(ImageEntry):
+    query_name: str = ""
+    source_image_id: str = ""
+    bbox: Optional[Tuple[int, int, int, int]] = None
+    relevant_ids: Set[str] = field(default_factory=set)
+    junk_ids: Set[str] = field(default_factory=set)
+
+
 def load_image_paths(folder: str, extensions: Sequence[str] = IMAGE_EXTENSIONS) -> List[str]:
     if not os.path.isdir(folder):
         return []
     paths = []
+    lowered = tuple(ext.lower() for ext in extensions)
     for name in sorted(os.listdir(folder)):
-        if name.lower().endswith(tuple(ext.lower() for ext in extensions)):
+        if name.lower().endswith(lowered):
             paths.append(os.path.join(folder, name))
     return paths
 
@@ -38,6 +48,10 @@ def load_image_paths(folder: str, extensions: Sequence[str] = IMAGE_EXTENSIONS) 
 def infer_label_from_path(path: str) -> str:
     stem = os.path.splitext(os.path.basename(path))[0]
     return stem.split("_")[0]
+
+
+def infer_image_id_from_path(path: str) -> str:
+    return os.path.splitext(os.path.basename(path))[0]
 
 
 def _create_feature_extractor(feature_type: str, max_features: int):
@@ -68,20 +82,50 @@ def extract_features(
     return keypoints, descriptors
 
 
-def collect_image_entries(
-    image_paths: Sequence[str],
+def collect_reference_entries(
+    image_records: Sequence[Dict[str, object]],
     feature_type: str,
     max_features: int,
 ) -> List[ImageEntry]:
     entries = []
-    for path in image_paths:
+    for record in image_records:
+        path = str(record["path"])
         keypoints, descriptors = extract_features(path, feature_type=feature_type, max_features=max_features)
         entries.append(
             ImageEntry(
                 path=path,
-                label=infer_label_from_path(path),
+                image_id=str(record.get("image_id", infer_image_id_from_path(path))),
+                label=str(record.get("label", infer_label_from_path(path))),
                 keypoints=keypoints,
                 descriptors=descriptors,
+            )
+        )
+    return entries
+
+
+def collect_query_entries(
+    query_records: Sequence[Dict[str, object]],
+    feature_type: str,
+    max_features: int,
+) -> List[QueryEntry]:
+    entries = []
+    for record in query_records:
+        path = str(record["query_path"])
+        keypoints, descriptors = extract_features(path, feature_type=feature_type, max_features=max_features)
+        bbox = record.get("bbox")
+        bbox_tuple = tuple(int(v) for v in bbox) if bbox is not None else None
+        entries.append(
+            QueryEntry(
+                path=path,
+                image_id=str(record.get("query_id", infer_image_id_from_path(path))),
+                label=str(record.get("label", infer_label_from_path(path))),
+                keypoints=keypoints,
+                descriptors=descriptors,
+                query_name=str(record.get("query_name", infer_image_id_from_path(path))),
+                source_image_id=str(record.get("source_image_id", "")),
+                bbox=bbox_tuple,
+                relevant_ids=set(str(item) for item in record.get("relevant_ids", [])),
+                junk_ids=set(str(item) for item in record.get("junk_ids", [])),
             )
         )
     return entries
@@ -187,31 +231,8 @@ def compute_similarity(
     raise ValueError(f"Unsupported similarity metric: {metric}")
 
 
-def search_image(
-    query_hist: np.ndarray,
-    database_hists: np.ndarray,
-    image_paths: Sequence[str],
-    labels: Sequence[str],
-    top_k: int = 5,
-    metric: str = "cosine",
-) -> List[Dict[str, object]]:
-    scores = compute_similarity(query_hist, database_hists, metric=metric)
-    ranking = np.argsort(scores)[::-1][:top_k]
-    results = []
-    for rank, idx in enumerate(ranking, start=1):
-        results.append(
-            {
-                "rank": rank,
-                "path": image_paths[idx],
-                "label": labels[idx],
-                "score": float(scores[idx]),
-            }
-        )
-    return results
-
-
 def compute_geometric_verification_score(
-    query_entry: ImageEntry,
+    query_entry: QueryEntry,
     reference_entry: ImageEntry,
     ratio_test: float = 0.75,
     ransac_threshold: float = 4.0,
@@ -242,7 +263,7 @@ def compute_geometric_verification_score(
 
 
 def rerank_with_spatial_verification(
-    query_entry: ImageEntry,
+    query_entry: QueryEntry,
     reference_entries: Sequence[ImageEntry],
     scores: np.ndarray,
     ranking: np.ndarray,
@@ -295,57 +316,155 @@ def detect_loop_closure(
     return detections
 
 
-def evaluate_rankings(rankings: Sequence[Dict[str, object]], top_k: int) -> Dict[str, float]:
+def compute_average_precision(full_results: Sequence[Dict[str, object]], relevant_ids: Set[str], junk_ids: Set[str]) -> float:
+    if not relevant_ids:
+        return 0.0
+
+    hit_count = 0
+    precision_sum = 0.0
+    filtered_rank = 0
+    for result in full_results:
+        image_id = str(result["image_id"])
+        if image_id in junk_ids:
+            continue
+        filtered_rank += 1
+        if image_id in relevant_ids:
+            hit_count += 1
+            precision_sum += hit_count / filtered_rank
+
+    return precision_sum / len(relevant_ids)
+
+
+def compute_first_relevant_rank(full_results: Sequence[Dict[str, object]], relevant_ids: Set[str], junk_ids: Set[str]) -> Optional[int]:
+    filtered_rank = 0
+    for result in full_results:
+        image_id = str(result["image_id"])
+        if image_id in junk_ids:
+            continue
+        filtered_rank += 1
+        if image_id in relevant_ids:
+            return filtered_rank
+    return None
+
+
+def evaluate_demo_rankings(
+    rankings: Sequence[Dict[str, object]],
+    metric_top_k: Sequence[int],
+) -> Dict[str, float]:
     total = max(len(rankings), 1)
-    top1_hits = 0
-    topk_hits = 0
     reciprocal_ranks = []
+    hit_counts = {k: 0 for k in metric_top_k}
 
     for item in rankings:
         query_label = item["query_label"]
-        ranked = item["results"]
         found_rank = None
-        for result in ranked:
+        for result in item["full_results"]:
             if result["label"] == query_label:
                 found_rank = int(result["rank"])
                 break
-        if found_rank == 1:
-            top1_hits += 1
-        if found_rank is not None and found_rank <= top_k:
-            topk_hits += 1
-            reciprocal_ranks.append(1.0 / found_rank)
-        else:
-            reciprocal_ranks.append(0.0)
 
-    return {
+        reciprocal_ranks.append(0.0 if found_rank is None else 1.0 / found_rank)
+        for k in metric_top_k:
+            if found_rank is not None and found_rank <= k:
+                hit_counts[k] += 1
+
+    metrics: Dict[str, float] = {
         "queries": float(len(rankings)),
-        "top1_accuracy": top1_hits / total,
-        f"top{top_k}_accuracy": topk_hits / total,
         "mrr": float(np.mean(reciprocal_ranks)) if reciprocal_ranks else 0.0,
     }
+    for k in metric_top_k:
+        metrics[f"top{k}_accuracy"] = hit_counts[k] / total
+    return metrics
 
 
-def save_rankings_csv(rankings: Sequence[Dict[str, object]], output_csv: str) -> None:
+def evaluate_oxford_rankings(
+    rankings: Sequence[Dict[str, object]],
+    metric_top_k: Sequence[int],
+) -> Dict[str, float]:
+    total = max(len(rankings), 1)
+    ap_values = []
+    reciprocal_ranks = []
+    hit_counts = {k: 0 for k in metric_top_k}
+
+    for item in rankings:
+        relevant_ids = set(item.get("relevant_ids", []))
+        junk_ids = set(item.get("junk_ids", []))
+        full_results = item["full_results"]
+        ap = compute_average_precision(full_results, relevant_ids, junk_ids)
+        ap_values.append(ap)
+
+        first_relevant_rank = compute_first_relevant_rank(full_results, relevant_ids, junk_ids)
+        reciprocal_ranks.append(0.0 if first_relevant_rank is None else 1.0 / first_relevant_rank)
+        for k in metric_top_k:
+            if first_relevant_rank is not None and first_relevant_rank <= k:
+                hit_counts[k] += 1
+
+    metrics = {
+        "queries": float(len(rankings)),
+        "map": float(np.mean(ap_values)) if ap_values else 0.0,
+        "mrr": float(np.mean(reciprocal_ranks)) if reciprocal_ranks else 0.0,
+    }
+    for k in metric_top_k:
+        metrics[f"top{k}_success"] = hit_counts[k] / total
+    return metrics
+
+
+def evaluate_rankings(
+    rankings: Sequence[Dict[str, object]],
+    dataset_mode: str,
+    evaluation_cfg: Dict[str, object],
+    retrieval_top_k: int,
+) -> Dict[str, float]:
+    metric_top_k = sorted({int(value) for value in evaluation_cfg.get("top_k_values", [retrieval_top_k]) if int(value) > 0})
+    if not metric_top_k:
+        metric_top_k = [retrieval_top_k]
+
+    if dataset_mode == "oxford5k":
+        return evaluate_oxford_rankings(rankings, metric_top_k=metric_top_k)
+    return evaluate_demo_rankings(rankings, metric_top_k=metric_top_k)
+
+
+def save_rankings_csv(rankings: Sequence[Dict[str, object]], output_csv: str, dataset_mode: str) -> None:
     with open(output_csv, "w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
-            ["query_path", "query_label", "rank", "match_path", "match_label", "score"]
+            [
+                "query_name",
+                "query_path",
+                "query_label",
+                "query_image_id",
+                "rank",
+                "match_path",
+                "match_label",
+                "match_image_id",
+                "score",
+                "is_relevant",
+                "is_junk",
+            ]
         )
         for item in rankings:
-            for result in item["results"]:
+            relevant_ids = set(item.get("relevant_ids", []))
+            junk_ids = set(item.get("junk_ids", []))
+            for result in item["full_results"]:
+                image_id = str(result["image_id"])
                 writer.writerow(
                     [
+                        item.get("query_name", ""),
                         item["query_path"],
                         item["query_label"],
+                        item.get("query_image_id", ""),
                         result["rank"],
                         result["path"],
                         result["label"],
+                        image_id,
                         f"{result['score']:.6f}",
+                        int(image_id in relevant_ids) if dataset_mode == "oxford5k" else "",
+                        int(image_id in junk_ids) if dataset_mode == "oxford5k" else "",
                     ]
                 )
 
 
-def save_metrics_txt(metrics: Dict[str, float], output_txt: str) -> None:
+def save_metrics_txt(metrics: Dict[str, object], output_txt: str) -> None:
     with open(output_txt, "w", encoding="utf-8") as handle:
         for key, value in metrics.items():
             if isinstance(value, float):
@@ -368,6 +487,7 @@ def _plot_match(ax, image_path: str, title: str) -> None:
 def save_visualizations(
     rankings: Sequence[Dict[str, object]],
     output_dir: str,
+    dataset_mode: str,
     max_queries: int = 5,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
@@ -377,12 +497,21 @@ def save_visualizations(
         if cols == 1:
             axes = [axes]
 
-        _plot_match(axes[0], item["query_path"], f"Query\n{item['query_label']}")
+        query_title = item.get("query_name", item["query_label"])
+        _plot_match(axes[0], item["query_path"], f"Query\n{query_title}")
+        relevant_ids = set(item.get("relevant_ids", []))
+        junk_ids = set(item.get("junk_ids", []))
         for idx, result in enumerate(item["results"], start=1):
+            suffix = ""
+            if dataset_mode == "oxford5k":
+                if result["image_id"] in relevant_ids:
+                    suffix = "\nrelevant"
+                elif result["image_id"] in junk_ids:
+                    suffix = "\njunk"
             _plot_match(
                 axes[idx],
                 result["path"],
-                f"Rank {result['rank']}\n{result['label']} ({result['score']:.2f})",
+                f"Rank {result['rank']}\n{result['image_id']} ({result['score']:.2f}){suffix}",
             )
 
         fig.tight_layout()
@@ -391,14 +520,12 @@ def save_visualizations(
         plt.close(fig)
 
 
-def bow_retrieval_pipeline(
-    reference_paths: Sequence[str],
-    query_paths: Sequence[str],
-    config: Dict[str, object],
-) -> Dict[str, object]:
+def bow_retrieval_pipeline(dataset_bundle: Dict[str, object], config: Dict[str, object]) -> Dict[str, object]:
+    dataset_mode = str(dataset_bundle.get("mode", "demo")).lower()
     feature_cfg = config["feature"]
     vocab_cfg = config["vocabulary"]
     retrieval_cfg = config["retrieval"]
+    evaluation_cfg = config.get("evaluation", {})
     loop_cfg = config.get("loop_closure", {})
     output_cfg = config["output"]
     spatial_cfg = config.get("spatial_verification", {})
@@ -411,8 +538,8 @@ def bow_retrieval_pipeline(
     top_k = int(retrieval_cfg.get("top_k", 5))
     metric = retrieval_cfg.get("metric", "cosine")
 
-    reference_entries = collect_image_entries(reference_paths, feature_type, max_features)
-    query_entries = collect_image_entries(query_paths, feature_type, max_features)
+    reference_entries = collect_reference_entries(dataset_bundle["reference_images"], feature_type, max_features)
+    query_entries = collect_query_entries(dataset_bundle["queries"], feature_type, max_features)
 
     vocabulary = build_vocabulary(
         [entry.descriptors for entry in reference_entries],
@@ -430,8 +557,6 @@ def bow_retrieval_pipeline(
         entry.histogram = image_to_bow_histogram(entry.descriptors, vocabulary, idf=idf)
 
     database_hists = np.asarray([entry.histogram for entry in reference_entries], dtype=np.float32)
-    database_paths = [entry.path for entry in reference_entries]
-    database_labels = [entry.label for entry in reference_entries]
 
     rankings = []
     for entry in query_entries:
@@ -448,27 +573,41 @@ def bow_retrieval_pipeline(
                 ransac_threshold=float(spatial_cfg.get("ransac_threshold", 4.0)),
             )
 
-        results = []
-        for rank, idx in enumerate(ranking[:top_k], start=1):
+        full_results = []
+        for rank, idx in enumerate(ranking, start=1):
             idx = int(idx)
-            results.append(
+            reference_entry = reference_entries[idx]
+            full_results.append(
                 {
                     "rank": rank,
-                    "path": database_paths[idx],
-                    "label": database_labels[idx],
+                    "path": reference_entry.path,
+                    "label": reference_entry.label,
+                    "image_id": reference_entry.image_id,
                     "score": float(scores[idx]),
                 }
             )
 
         rankings.append(
             {
+                "query_name": entry.query_name,
                 "query_path": entry.path,
                 "query_label": entry.label,
-                "results": results,
+                "query_image_id": entry.image_id,
+                "source_image_id": entry.source_image_id,
+                "bbox": entry.bbox,
+                "relevant_ids": sorted(entry.relevant_ids),
+                "junk_ids": sorted(entry.junk_ids),
+                "results": full_results[:top_k],
+                "full_results": full_results,
             }
         )
 
-    metrics = evaluate_rankings(rankings, top_k=top_k)
+    metrics = evaluate_rankings(
+        rankings,
+        dataset_mode=dataset_mode,
+        evaluation_cfg=evaluation_cfg,
+        retrieval_top_k=top_k,
+    )
     metrics["reference_images"] = float(len(reference_entries))
     metrics["average_reference_keypoints"] = float(
         np.mean([len(entry.keypoints) for entry in reference_entries]) if reference_entries else 0.0
@@ -481,11 +620,11 @@ def bow_retrieval_pipeline(
     np.save(os.path.join(output_cfg["results_dir"], "vocabulary.npy"), vocabulary)
     np.save(os.path.join(output_cfg["results_dir"], "idf.npy"), idf)
     np.save(os.path.join(output_cfg["results_dir"], "database_histograms.npy"), database_hists)
-    save_rankings_csv(rankings, os.path.join(output_cfg["results_dir"], "retrieval_results.csv"))
+    save_rankings_csv(rankings, os.path.join(output_cfg["results_dir"], "retrieval_results.csv"), dataset_mode)
     save_metrics_txt(metrics, os.path.join(output_cfg["results_dir"], "metrics.txt"))
 
     if output_cfg.get("save_visualizations", True):
-        save_visualizations(rankings, os.path.join(output_cfg["results_dir"], "visualizations"))
+        save_visualizations(rankings, os.path.join(output_cfg["results_dir"], "visualizations"), dataset_mode)
 
     loop_detections = []
     if loop_cfg.get("enabled", False):

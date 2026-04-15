@@ -1,12 +1,18 @@
 import argparse
 import os
-from typing import Dict, List, Tuple
+import tarfile
+import urllib.request
+from pathlib import Path
+from typing import Dict, List, Sequence, Tuple
 
 import cv2
 import numpy as np
 import yaml
 
 from bow_retrieval import IMAGE_EXTENSIONS, bow_retrieval_pipeline, load_image_paths
+
+
+OXFORD_GT_SUFFIXES = ("_query.txt", "_good.txt", "_ok.txt", "_junk.txt")
 
 
 def _draw_scene(scene_id: int, variant: int, is_query: bool, size: int = 320) -> np.ndarray:
@@ -126,22 +132,275 @@ def generate_demo_dataset(reference_dir: str, query_dir: str) -> Dict[str, int]:
     return {"reference_images": ref_count, "query_images": query_count}
 
 
-def ensure_dataset(config: Dict[str, object], force_generate: bool = False) -> Tuple[List[str], List[str]]:
-    dataset_cfg = config["dataset"]
-    reference_dir = dataset_cfg["reference_dir"]
-    query_dir = dataset_cfg["query_dir"]
+def _build_demo_bundle(reference_paths: Sequence[str], query_paths: Sequence[str]) -> Dict[str, object]:
+    return {
+        "mode": "demo",
+        "reference_images": [
+            {
+                "path": path,
+                "image_id": Path(path).stem,
+                "label": Path(path).stem.split("_")[0],
+            }
+            for path in reference_paths
+        ],
+        "queries": [
+            {
+                "query_name": Path(path).stem,
+                "query_path": path,
+                "query_id": Path(path).stem,
+                "label": Path(path).stem.split("_")[0],
+                "source_image_id": "",
+                "bbox": None,
+                "relevant_ids": [],
+                "junk_ids": [],
+            }
+            for path in query_paths
+        ],
+    }
+
+
+def ensure_demo_dataset(config: Dict[str, object], force_generate: bool = False) -> Dict[str, object]:
+    demo_cfg = config["dataset"]["demo"]
+    reference_dir = str(demo_cfg["reference_dir"])
+    query_dir = str(demo_cfg["query_dir"])
+    auto_generate = bool(demo_cfg.get("auto_generate_if_missing", True))
 
     reference_paths = load_image_paths(reference_dir, IMAGE_EXTENSIONS)
     query_paths = load_image_paths(query_dir, IMAGE_EXTENSIONS)
 
-    if force_generate or not reference_paths or not query_paths:
+    if force_generate or ((not reference_paths or not query_paths) and auto_generate):
         generate_demo_dataset(reference_dir, query_dir)
         reference_paths = load_image_paths(reference_dir, IMAGE_EXTENSIONS)
         query_paths = load_image_paths(query_dir, IMAGE_EXTENSIONS)
 
     if not reference_paths or not query_paths:
-        raise RuntimeError("Dataset folders are empty even after demo generation.")
-    return reference_paths, query_paths
+        raise RuntimeError("Demo dataset folders are empty and auto generation is disabled or failed.")
+    return _build_demo_bundle(reference_paths, query_paths)
+
+
+def download_file(url: str, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        return
+    with urllib.request.urlopen(url) as response, open(destination, "wb") as handle:
+        handle.write(response.read())
+
+
+def extract_tar_archive(archive_path: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive_path, "r:*") as archive:
+        archive.extractall(destination)
+
+
+def _flatten_single_nested_directory(directory: Path) -> None:
+    if not directory.exists():
+        return
+    entries = list(directory.iterdir())
+    if len(entries) != 1 or not entries[0].is_dir():
+        return
+    nested_dir = entries[0]
+    moved_any = False
+    for child in nested_dir.iterdir():
+        target = directory / child.name
+        if target.exists():
+            continue
+        child.rename(target)
+        moved_any = True
+    if moved_any:
+        try:
+            nested_dir.rmdir()
+        except OSError:
+            pass
+
+
+def _collect_gt_groups(ground_truth_dir: Path) -> Dict[str, Dict[str, Path]]:
+    groups: Dict[str, Dict[str, Path]] = {}
+    for path in sorted(ground_truth_dir.glob("*.txt")):
+        name = path.name
+        matched = False
+        for suffix in OXFORD_GT_SUFFIXES:
+            if name.endswith(suffix):
+                query_name = name[: -len(suffix)]
+                groups.setdefault(query_name, {})[suffix] = path
+                matched = True
+                break
+        if not matched:
+            continue
+    return groups
+
+
+def _parse_query_file(query_file: Path) -> Tuple[str, Tuple[int, int, int, int]]:
+    raw = query_file.read_text(encoding="utf-8").strip()
+    if not raw:
+        raise ValueError(f"Query file is empty: {query_file}")
+    parts = raw.split()
+    if len(parts) < 5:
+        raise ValueError(f"Unexpected Oxford query format in {query_file}: {raw}")
+
+    image_id = parts[0]
+    if image_id.startswith("oxc1_"):
+        image_id = image_id[len("oxc1_") :]
+
+    bbox_values = [int(round(float(value))) for value in parts[1:5]]
+    x1, y1, x2, y2 = bbox_values
+    return image_id, (x1, y1, x2, y2)
+
+
+def _read_id_list(path: Path) -> List[str]:
+    if not path.exists():
+        return []
+    values = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            values.append(line)
+    return values
+
+
+def _resolve_image_path(images_dir: Path, image_id: str) -> Path:
+    direct = images_dir / f"{image_id}.jpg"
+    if direct.exists():
+        return direct
+    matches = list(images_dir.glob(f"{image_id}.*"))
+    if matches:
+        return matches[0]
+    raise FileNotFoundError(f"Could not find Oxford image for id '{image_id}' in {images_dir}")
+
+
+def _clip_bbox(bbox: Tuple[int, int, int, int], width: int, height: int) -> Tuple[int, int, int, int]:
+    x1, y1, x2, y2 = bbox
+    x1 = min(max(x1, 0), width - 1)
+    y1 = min(max(y1, 0), height - 1)
+    x2 = min(max(x2, x1 + 1), width)
+    y2 = min(max(y2, y1 + 1), height)
+    return x1, y1, x2, y2
+
+
+def _generate_query_crop(source_image_path: Path, bbox: Tuple[int, int, int, int], output_path: Path) -> Tuple[int, int, int, int]:
+    image = cv2.imread(str(source_image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise FileNotFoundError(f"Cannot read source Oxford image: {source_image_path}")
+    height, width = image.shape[:2]
+    clipped_bbox = _clip_bbox(bbox, width, height)
+    x1, y1, x2, y2 = clipped_bbox
+    crop = image[y1:y2, x1:x2]
+    if crop.size == 0:
+        raise ValueError(f"Query crop is empty for {source_image_path} with bbox {bbox}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), crop)
+    return clipped_bbox
+
+
+def _validate_oxford_layout(images_dir: Path, ground_truth_dir: Path) -> None:
+    if not images_dir.is_dir():
+        raise RuntimeError(f"Oxford images directory is missing: {images_dir}")
+    if not ground_truth_dir.is_dir():
+        raise RuntimeError(f"Oxford ground-truth directory is missing: {ground_truth_dir}")
+    image_count = len(load_image_paths(str(images_dir), IMAGE_EXTENSIONS))
+    if image_count == 0:
+        raise RuntimeError(f"Oxford images directory is empty: {images_dir}")
+    groups = _collect_gt_groups(ground_truth_dir)
+    if not groups:
+        raise RuntimeError(f"No Oxford ground-truth query files found in {ground_truth_dir}")
+    for query_name, files in groups.items():
+        missing = [suffix for suffix in OXFORD_GT_SUFFIXES if suffix not in files]
+        if missing:
+            raise RuntimeError(f"Oxford query '{query_name}' is missing GT files: {missing}")
+
+
+def ensure_oxford5k_dataset(config: Dict[str, object]) -> Dict[str, object]:
+    oxford_cfg = config["dataset"]["oxford5k"]
+    data_root = Path(str(oxford_cfg["data_root"]))
+    images_dir = Path(str(oxford_cfg["images_dir"]))
+    ground_truth_dir = Path(str(oxford_cfg["ground_truth_dir"]))
+    query_crops_dir = Path(str(oxford_cfg["query_crops_dir"]))
+    archive_dir = Path(str(oxford_cfg["archive_dir"]))
+    auto_download = bool(oxford_cfg.get("auto_download", True))
+    images_url = str(oxford_cfg.get("download_images_url", "")).strip()
+    gt_url = str(oxford_cfg.get("download_gt_url", "")).strip()
+
+    data_root.mkdir(parents=True, exist_ok=True)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    query_crops_dir.mkdir(parents=True, exist_ok=True)
+
+    existing_images = load_image_paths(str(images_dir), IMAGE_EXTENSIONS)
+    gt_groups = _collect_gt_groups(ground_truth_dir) if ground_truth_dir.is_dir() else {}
+    needs_download = not existing_images or not gt_groups
+
+    if needs_download:
+        if not auto_download:
+            raise RuntimeError("Oxford5k data is missing and auto_download is disabled.")
+        if not images_url or not gt_url:
+            raise RuntimeError("Oxford5k download URLs are not configured.")
+
+        images_archive = archive_dir / Path(images_url).name
+        gt_archive = archive_dir / Path(gt_url).name
+        download_file(images_url, images_archive)
+        download_file(gt_url, gt_archive)
+
+        if not existing_images:
+            extract_tar_archive(images_archive, images_dir)
+            _flatten_single_nested_directory(images_dir)
+        if not gt_groups:
+            extract_tar_archive(gt_archive, ground_truth_dir)
+            _flatten_single_nested_directory(ground_truth_dir)
+
+    _validate_oxford_layout(images_dir, ground_truth_dir)
+
+    reference_paths = load_image_paths(str(images_dir), IMAGE_EXTENSIONS)
+    reference_images = [
+        {
+            "path": path,
+            "image_id": Path(path).stem,
+            "label": Path(path).stem.split("_")[0],
+        }
+        for path in reference_paths
+    ]
+
+    queries = []
+    for query_name, files in sorted(_collect_gt_groups(ground_truth_dir).items()):
+        source_image_id, bbox = _parse_query_file(files["_query.txt"])
+        source_image_path = _resolve_image_path(images_dir, source_image_id)
+        crop_path = query_crops_dir / f"{query_name}.jpg"
+        clipped_bbox = _generate_query_crop(source_image_path, bbox, crop_path)
+        good_ids = set(_read_id_list(files["_good.txt"]))
+        ok_ids = set(_read_id_list(files["_ok.txt"]))
+        junk_ids = set(_read_id_list(files["_junk.txt"]))
+        relevant_ids = sorted(good_ids | ok_ids)
+        queries.append(
+            {
+                "query_name": query_name,
+                "query_path": str(crop_path),
+                "query_id": query_name,
+                "label": source_image_id.split("_")[0],
+                "source_image_id": source_image_id,
+                "source_image_path": str(source_image_path),
+                "bbox": clipped_bbox,
+                "relevant_ids": relevant_ids,
+                "junk_ids": sorted(junk_ids),
+            }
+        )
+
+    return {
+        "mode": "oxford5k",
+        "reference_images": reference_images,
+        "queries": queries,
+        "metadata": {
+            "data_root": str(data_root),
+            "images_dir": str(images_dir),
+            "ground_truth_dir": str(ground_truth_dir),
+            "query_crops_dir": str(query_crops_dir),
+        },
+    }
+
+
+def prepare_dataset(config: Dict[str, object], force_generate_demo: bool = False) -> Dict[str, object]:
+    mode = str(config["dataset"].get("mode", "demo")).lower()
+    if mode == "demo":
+        return ensure_demo_dataset(config, force_generate=force_generate_demo)
+    if mode == "oxford5k":
+        return ensure_oxford5k_dataset(config)
+    raise ValueError(f"Unsupported dataset mode: {mode}")
 
 
 def main():
@@ -157,17 +416,27 @@ def main():
     with open(args.config, "r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
 
-    reference_paths, query_paths = ensure_dataset(config, force_generate=args.generate_demo)
-    outputs = bow_retrieval_pipeline(reference_paths, query_paths, config)
+    dataset_bundle = prepare_dataset(config, force_generate_demo=args.generate_demo)
+    outputs = bow_retrieval_pipeline(dataset_bundle, config)
 
     metrics = outputs["metrics"]
+    dataset_mode = str(dataset_bundle.get("mode", "demo")).lower()
     print("Visual BoW retrieval completed.")
+    print(f"Dataset mode: {dataset_mode}")
     print(f"Reference images: {int(metrics['reference_images'])}")
     print(f"Queries: {int(metrics['queries'])}")
-    print(f"Top-1 accuracy: {metrics['top1_accuracy']:.3f}")
-    top_k = int(config["retrieval"]["top_k"])
-    print(f"Top-{top_k} accuracy: {metrics[f'top{top_k}_accuracy']:.3f}")
-    print(f"MRR: {metrics['mrr']:.3f}")
+    if dataset_mode == "oxford5k":
+        if "map" in metrics:
+            print(f"mAP: {metrics['map']:.3f}")
+        for key in sorted(metrics):
+            if key.startswith("top") and key.endswith("_success"):
+                print(f"{key}: {metrics[key]:.3f}")
+        print(f"MRR: {metrics['mrr']:.3f}")
+    else:
+        for key in sorted(metrics):
+            if key.startswith("top") and key.endswith("_accuracy"):
+                print(f"{key}: {metrics[key]:.3f}")
+        print(f"MRR: {metrics['mrr']:.3f}")
     print(f"Results saved to: {config['output']['results_dir']}")
 
 

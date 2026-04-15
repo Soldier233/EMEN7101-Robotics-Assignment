@@ -1,6 +1,20 @@
 dataset:
-  reference_dir: Assignment2/data/demo/reference
-  query_dir: Assignment2/data/demo/query
+  mode: oxford5k
+
+  demo:
+    reference_dir: Assignment2/data/demo/reference
+    query_dir: Assignment2/data/demo/query
+    auto_generate_if_missing: true
+
+  oxford5k:
+    data_root: Assignment2/data/oxford5k
+    images_dir: Assignment2/data/oxford5k/images
+    ground_truth_dir: Assignment2/data/oxford5k/gt
+    query_crops_dir: Assignment2/data/oxford5k/query_crops
+    archive_dir: Assignment2/data/downloads
+    auto_download: true
+    download_images_url: https://www.robots.ox.ac.uk/~vgg/data/oxbuildings/oxbuild_images.tgz
+    download_gt_url: https://www.robots.ox.ac.uk/~vgg/data/oxbuildings/gt_files_170407.tgz
 
 feature:
   type: SIFT
@@ -25,6 +39,11 @@ loop_closure:
   enabled: true
   threshold: 0.78
   min_gap: 2
+
+evaluation:
+  protocol: demo
+  compute_map: true
+  top_k_values: [1, 3, 5, 10]
 
 output:
   results_dir: Assignment2/results
