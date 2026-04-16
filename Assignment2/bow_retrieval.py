@@ -464,6 +464,54 @@ def save_rankings_csv(rankings: Sequence[Dict[str, object]], output_csv: str, da
                 )
 
 
+def _is_relevant_result(item: Dict[str, object], result: Dict[str, object], dataset_mode: str) -> bool:
+    if dataset_mode == "oxford5k":
+        relevant_ids = set(item.get("relevant_ids", []))
+        return str(result["image_id"]) in relevant_ids
+    return str(result["label"]) == str(item["query_label"])
+
+
+def _format_display_path(path: str) -> str:
+    try:
+        return os.path.relpath(path).replace("\\", "/")
+    except ValueError:
+        return path.replace("\\", "/")
+
+
+def save_performance_metrics_txt(
+    rankings: Sequence[Dict[str, object]],
+    output_txt: str,
+    dataset_mode: str,
+    display_top_k: int = 5,
+) -> None:
+    with open(output_txt, "w", encoding="utf-8") as handle:
+        for query_idx, item in enumerate(rankings):
+            query_name = os.path.basename(str(item.get("query_path", item.get("query_name", "query"))))
+            full_results = list(item.get("full_results", []))
+            shown_results = full_results[:display_top_k]
+
+            handle.write(f"Query: {query_name}\n")
+            handle.write(f"Top {len(shown_results)} matches:\n")
+            for rank, result in enumerate(shown_results, start=1):
+                marker = "✓" if _is_relevant_result(item, result, dataset_mode) else "X"
+                match_path = _format_display_path(str(result["path"]))
+                handle.write(f"{rank}. {match_path} (score: {float(result['score']):.2f}) {marker}\n")
+
+            for k in (1, 5):
+                top_results = full_results[:k]
+                if top_results:
+                    relevant_count = sum(
+                        1 for result in top_results if _is_relevant_result(item, result, dataset_mode)
+                    )
+                    precision = relevant_count / len(top_results)
+                else:
+                    precision = 0.0
+                handle.write(f"Precision@{k}: {precision:.1f}\n")
+
+            if query_idx < len(rankings) - 1:
+                handle.write("\n")
+
+
 def save_metrics_txt(metrics: Dict[str, object], output_txt: str) -> None:
     with open(output_txt, "w", encoding="utf-8") as handle:
         for key, value in metrics.items():
@@ -622,6 +670,12 @@ def bow_retrieval_pipeline(dataset_bundle: Dict[str, object], config: Dict[str, 
     np.save(os.path.join(output_cfg["results_dir"], "database_histograms.npy"), database_hists)
     save_rankings_csv(rankings, os.path.join(output_cfg["results_dir"], "retrieval_results.csv"), dataset_mode)
     save_metrics_txt(metrics, os.path.join(output_cfg["results_dir"], "metrics.txt"))
+    save_performance_metrics_txt(
+        rankings,
+        os.path.join(output_cfg["results_dir"], "performance_metrics.txt"),
+        dataset_mode,
+        display_top_k=min(5, top_k),
+    )
 
     if output_cfg.get("save_visualizations", True):
         save_visualizations(rankings, os.path.join(output_cfg["results_dir"], "visualizations"), dataset_mode)
