@@ -1,26 +1,8 @@
 # Camera Pose Estimation via Epipolar Geometry
 
-## 1. Objective
+## 1. Implementation Details
 
-This assignment implements a complete camera pose estimation pipeline based on epipolar geometry. Given two images of the same scene from different viewpoints, the goal is to estimate the relative camera pose, including the rotation matrix \(R\) and translation vector \(t\) up to scale.
-
-The implementation follows the standard two-view geometry workflow:
-- feature extraction and matching;
-- fundamental matrix estimation with the normalized 8-point algorithm;
-- robust outlier rejection with RANSAC;
-- essential matrix computation from camera intrinsics;
-- decomposition of the essential matrix into candidate poses;
-- pose disambiguation using triangulation and the cheirality constraint.
-
-The implementation is mainly organized in:
-- `pose_estimation.py`: core functions for feature extraction, matching, fundamental matrix estimation, essential matrix decomposition, triangulation, visualization, and metric export;
-- `run_pose_estimation.py`: data preparation and pipeline execution for both synthetic and custom image pairs;
-- `test_data/`: input images, intrinsics, and optional ground-truth pose;
-- `results/`: output pose files, feature matching visualization, epipolar lines, reconstruction plot, and error analysis.
-
-## 2. Implementation Details
-
-### 2.1 Feature extraction and matching
+### 1.1 Feature extraction and matching
 
 The pipeline supports both **SIFT** and **ORB**, and the main experiments use **SIFT**. SIFT is selected because it is generally more stable under moderate scale and viewpoint changes than ORB, which is helpful for two-view pose estimation on real image pairs.
 
@@ -30,19 +12,19 @@ After feature extraction, descriptor matching is performed with:
 
 To reject weak correspondences, the implementation applies **Lowe’s ratio test**. Only matches that pass this test are used for geometric estimation.
 
-### 2.2 Fundamental matrix estimation
+### 1.2 Fundamental matrix estimation
 
 The fundamental matrix is estimated using the **normalized 8-point algorithm**. Before estimation, the matched 2D points are normalized by shifting the centroid to the origin and scaling the mean distance to \(\sqrt{2}\). This improves numerical stability.
 
 Given normalized correspondences, the linear system is solved by **SVD**. The estimated matrix is then forced to rank 2 by setting the smallest singular value to zero. Finally, the matrix is denormalized back to the original image coordinate system.
 
-### 2.3 RANSAC and Sampson distance
+### 1.3 RANSAC and Sampson distance
 
 Because feature matching inevitably contains outliers, the pipeline uses **RANSAC** to robustly estimate the fundamental matrix. In each iteration, 8 correspondences are sampled, a candidate fundamental matrix is estimated, and all correspondences are evaluated by the **Sampson distance**.
 
 The model with the largest number of inliers is selected, and the final fundamental matrix is re-estimated from all inliers. This step significantly improves robustness against mismatches.
 
-### 2.4 Essential matrix and pose recovery
+### 1.4 Essential matrix and pose recovery
 
 When camera intrinsics are known, the essential matrix is computed as:
 
@@ -54,7 +36,7 @@ After that, the singular values of \(E\) are enforced to follow the expected for
 
 The essential matrix is decomposed into four candidate \((R,t)\) solutions. Since only one of them corresponds to the physically correct camera motion, the implementation performs **linear triangulation** and applies a **cheirality check**. The pose that yields the largest number of triangulated points with positive depth in front of both cameras is selected as the final result.
 
-### 2.5 Visualization and outputs
+### 1.5 Visualization and outputs
 
 The pipeline generates several output files for qualitative and quantitative analysis:
 - `feature_matches.png`: inlier feature correspondences after RANSAC;
@@ -63,7 +45,7 @@ The pipeline generates several output files for qualitative and quantitative ana
 - `error_analysis.txt`: pose error summary when ground truth is available;
 - `reconstruction.png`: triangulated 3D point visualization.
 
-## 3. Parameter Choices and Justifications
+## 2. Parameter Choices and Justifications
 
 Several parameter settings are important in the current implementation.
 
@@ -75,9 +57,9 @@ Third, **RANSAC** uses **2000 iterations** and a **Sampson distance threshold of
 
 Finally, the pipeline evaluates both synthetic and real data. During development, the synthetic scene was useful for validating the implementation, but real images were necessary to test practical performance under natural texture, illumination, and viewpoint changes.
 
-## 4. Results Analysis
+## 3. Results Analysis
 
-### 4.1 Real-image experiment
+### 3.1 Real-image experiment
 
 For the final test, the submitted `test_data` uses a real image pair from the **TUM RGB-D Freiburg1 XYZ** dataset. The corresponding camera intrinsics and ground-truth relative pose were also prepared for evaluation.
 
@@ -91,7 +73,7 @@ The current run reports the following results:
 
 These results show that the pipeline can recover a physically valid pose from a real image pair and successfully produce epipolar and reconstruction outputs. The estimated essential matrix also satisfies the expected singular value structure, which indicates that the algebraic estimation steps are working correctly.
 
-### 4.2 Interpretation of the results
+### 3.2 Interpretation of the results
 
 The rotation estimation is moderately accurate, with an error below 10 degrees. This suggests that the recovered epipolar geometry captures the dominant camera motion reasonably well.
 
@@ -103,7 +85,7 @@ However, the translation direction error is much larger. This is not unusual in 
 
 The real dataset therefore demonstrates both the strength and the limitation of the current classical pipeline. The framework is correct and functional, but its accuracy still depends heavily on the quality of image matches.
 
-## 5. Discussion of Limitations and Improvements
+## 4. Discussion of Limitations and Improvements
 
 One limitation of the current system is that it depends strongly on sparse local feature matching. If the image pair contains repetitive patterns, weak texture, motion blur, or low overlap, the number of reliable matches can drop significantly, which directly affects the quality of the estimated fundamental matrix.
 
